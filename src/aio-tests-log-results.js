@@ -65,7 +65,7 @@ const reportSpecResults = function(config, results) {
         let caseKeys = [...testData.keys()];
         return caseKeys.reduce((r,caseKey) => {
             let attemptData = testData.get(caseKey).attempts;
-            return r.then(() => reportAllAttempts(config, caseKey, attemptData, testData.get(caseKey).id, results.screenshots));
+            return r.then(() => reportAllAttempts(config, caseKey, attemptData, testData.get(caseKey).id, results.screenshots, results.video));
 
         }, Promise.resolve());
     } else {
@@ -75,21 +75,21 @@ const reportSpecResults = function(config, results) {
     }
 }
 
-function reportAllAttempts(config, key, attemptData, id, screenshots) {
+function reportAllAttempts(config, key, attemptData, id, screenshots, video) {
     let idx = 0;
     return attemptData.reduce((resolve, attempt) => {
         return resolve.then(() => {
-            return postResult(config, key, attempt, id + "_" + (idx++) ,screenshots)
+            return postResult(config, key, attempt, id + "_" + (idx++) ,screenshots, video)
             });
         }, Promise.resolve()).catch(e => {
             aioLogger.error(e);
     });
 }
 
-function postResult(aioConfig,caseKey, attemptData, id, screenshots ) {
+function postResult(aioConfig,caseKey, attemptData, id, screenshots, video ) {
     let data = {
         "testRunStatus": getAIORunStatus(attemptData.state),
-        "effort": attemptData.wallClockDuration/1000,
+        "effort": attemptData.wallClockDuration,
         "isAutomated": true
     };
     if(attemptData.error) {
@@ -102,7 +102,7 @@ function postResult(aioConfig,caseKey, attemptData, id, screenshots ) {
             aioLogger.log(`Successfully reported ${caseKey} as ${data.testRunStatus} with runID ${response.data.ID}.`);
             let runId = response.data.ID;
             if(aioConfig.addAttachmentToFailedCases && data.testRunStatus.toLowerCase() === "failed" && (isAttachmentAPIAvailable || isAttachmentAPIAvailable == null)) {
-                return uploadAttachments(aioConfig.jiraProjectId, aioConfig.cycleDetails.cycleKeyToReportTo, runId,id, screenshots)
+                return uploadAttachments(aioConfig.jiraProjectId, aioConfig.cycleDetails.cycleKeyToReportTo, runId,id, screenshots, video)
             }
         })
         .catch(err => {
@@ -112,10 +112,10 @@ function postResult(aioConfig,caseKey, attemptData, id, screenshots ) {
         })
 }
 
-function uploadAttachments(jiraProjectId, cyclekey,runId, id, resultScreenshots) {
+function uploadAttachments(jiraProjectId, cyclekey,runId, id, resultScreenshots, video) {
     let screenshots =  resultScreenshots.filter(t => (t.testId + "_" + t.testAttemptIndex) === id);
+    let promises = [];
     if(screenshots.length) {
-        let promises = [];
         screenshots.forEach(s => {
                 const form = new FormData();
                 form.append('file', fs.createReadStream(s.path));
@@ -135,31 +135,47 @@ function uploadAttachments(jiraProjectId, cyclekey,runId, id, resultScreenshots)
                 });
                 promises.push(p);
         });
-        return Promise.all(promises);
-    } else {
-        return Promise.resolve();
+    } 
+    if(!!video){
+        const form = new FormData();
+        form.append('file', fs.createReadStream(video));
+
+        let p = aioAPIClient.post(`/project/${jiraProjectId}/testcycle/${cyclekey}/testrun/${runId}/attachment`, form, {
+            headers: form.getHeaders()
+        }).then(() => {
+            aioLogger.log("Video uploaded " + s.path);
+        }).catch(error => {
+            if (error.response.status === 404) {
+                aioLogger.error("Attachment API is not supported in current API version and hence attachments could not be uploaded.  Please upgrade to latest version of AIO Tests.");
+                isAttachmentAPIAvailable = false;
+            } else {
+                if (error.data) {
+                    aioLogger.error(error.data)
+                }
+            }
+        });
+        promises.push(p);
     }
+    return Promise.all(promises);
 }
 
 function findResults(results) {
     let testData = new Map();
     let pattern = new RegExp("\\w+-TC-\\d+", "gi");
-    if(results && results.tests) {
-        results.tests.forEach(t => {
-            let tcKeys = [];
-            let allTitles = t.title.join();
-            let match;
-            do {
-                match = pattern.exec(allTitles);
-                if(match) {
-                    tcKeys.push(match);
-                }
-            } while(match != null);
-            if(tcKeys.length) {
-                tcKeys.forEach(tcKey => testData.set(tcKey, {attempts: t.attempts, id : t.testId}))
+    results.tests.forEach(t => {
+        let tcKeys = [];
+        let allTitles = t.title.join();
+        let match;
+        do {
+            match = pattern.exec(allTitles);
+            if(match) {
+                tcKeys.push(match);
             }
-        });
-    }
+        } while(match != null);
+        if(tcKeys.length) {
+            tcKeys.forEach(tcKey => testData.set(tcKey, {attempts: t.attempts, id : t.testId}))
+        }
+    });
     return testData;
 }
 

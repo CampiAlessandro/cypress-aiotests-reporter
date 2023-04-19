@@ -1,5 +1,4 @@
 {
-  "nodeVersion": "bundled",
   "env": {
     "aioTests": {
       "enableReporting": true,
